@@ -1,0 +1,259 @@
+import cv2
+import numpy as np
+import time
+import os
+from PIL import Image
+from numba import jit
+
+
+def load_img(path):
+    return np.asarray(Image.open(path).convert("RGB"))
+
+
+def save_img(img, path):
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    Image.fromarray(img).save(path)
+
+
+def run_task(img, func, filename):
+    start = time.time()
+    result = func(img)
+    end = time.time()
+    print(f"время выполнения: {end - start:.5f} сек")
+    save_path = os.path.join("paintings", filename)
+    save_img(result, save_path)
+
+
+def gray(img):
+    gray_filt = np.array([0.299, 0.587, 0.114])
+    return img.dot(gray_filt)
+
+
+def gray_cv2(img):
+    print("ЧБ (библиотека)")
+    return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+
+@jit
+def conv(img, kernel):
+    h, w = img.shape
+    k_h, k_w = kernel.shape
+    pad = k_h // 2
+    img_pad = np.zeros((h + 2 * pad, w + 2 * pad))
+    img_pad[pad: pad + h, pad: pad + w] = img
+    output = np.zeros((h, w))
+    for y in range(h):
+        for x in range(w):
+            region = img_pad[y:y + k_h, x:x + k_w]
+            output[y, x] = np.sum(region * kernel)
+
+    return output
+
+
+def rgb_conv(img, kernel):
+    r_c, g_c, b_c = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+    r_conv = conv(r_c, kernel)
+    g_conv = conv(g_c, kernel)
+    b_conv = conv(b_c, kernel)
+    return np.dstack((r_conv, g_conv, b_conv))
+
+
+def blur(img):
+    kernel = np.array([[1 / 9, 1 / 9, 1 / 9], [1 / 9, 1 / 9, 1 / 9], [1 / 9, 1 / 9, 1 / 9]])
+    return conv(gray(img), kernel)
+
+
+def blur_cv2(img):
+    print("размытие (библиотека)")
+    gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    kernel = np.array([[1 / 9, 1 / 9, 1 / 9], [1 / 9, 1 / 9, 1 / 9], [1 / 9, 1 / 9, 1 / 9]])
+    return cv2.filter2D(gray_img, -1, kernel)
+
+
+def gauss_kernel(size, sigma):
+    ax = np.linspace(-(size // 2), size // 2, size)
+    x, y = np.meshgrid(ax, ax)
+    kernel = np.exp(-(x ** 2 + y ** 2) / (2.0 * sigma ** 2))
+    return kernel / np.sum(kernel)
+
+
+def gauss(img):
+    print("размытие Гауссом")
+    gray_img = gray(img)
+    kernel = gauss_kernel(5, 1)
+    return conv(gray_img, kernel)
+
+
+def gauss_rgb(img):
+    print("размытие Гауссом RGB")
+    kernel = gauss_kernel(5, 1)
+    return rgb_conv(img, kernel)
+
+
+def gauss_cv2(img):
+    print("размытие Гауссом (библиотека)")
+    gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return cv2.GaussianBlur(gray_img, (5, 5), 0)
+
+
+SOBEL_X = np.array([
+    [-1, 0, 1],
+    [-2, 0, 2],
+    [-1, 0, 1]
+])
+
+SOBEL_Y = np.array([
+    [1, 2, 1],
+    [0, 0, 0],
+    [-1, -2, -1]
+])
+
+
+def sobel(img):
+    print("собель")
+    gray_img = gray(img)
+    sobel_x = conv(gray_img, SOBEL_X)
+    sobel_y = conv(gray_img, SOBEL_Y)
+    interval = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
+    scale_factor = np.max(interval)
+    if scale_factor == 0: scale_factor = 1  # защита от деления на 0
+    return (interval / scale_factor) * 255
+
+
+def sobel_rgb(img):
+    print("собель RGB")
+    sobel_x = rgb_conv(img, SOBEL_X)
+    sobel_y = rgb_conv(img, SOBEL_Y)
+    interval = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
+    scale_factor = np.max(interval)
+    if scale_factor == 0: scale_factor = 1  # защита от деления на 0
+    return (interval / scale_factor) * 255
+
+
+def sobel_cv2(img):
+    print("собель (библиотека)")
+    gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    sobel_x = cv2.Sobel(gray_img, cv2.CV_64F, dx=1, dy=0, ksize=3)
+    sobel_y = cv2.Sobel(gray_img, cv2.CV_64F, dx=0, dy=1, ksize=3)
+    return cv2.magnitude(sobel_x, sobel_y)
+def gamma_correction(img, gamma=1.0):
+
+    print(f"гамма-коррекция (gamma={gamma})")
+    img_normalized = img / 255.0
+    img_corrected = np.power(img_normalized, gamma)
+    return (img_corrected * 255).astype(np.uint8)
+
+def gamma_correction_rgb(img, gamma=1.0):
+    print(f"гамма-коррекция RGB (gamma={gamma})")
+    result = np.zeros_like(img, dtype=np.float32)
+    for c in range(3):
+        normalized = img[:, :, c] / 255.0
+        result[:, :, c] = np.power(normalized, gamma) * 255
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+def histogram_equalization_gray(img):
+    print("выравнивание гистограммы (серое)")
+    gray_img = gray(img) if img.ndim == 3 else img
+    
+    hist, bins = np.histogram(gray_img.flatten(), 256, [0, 256])
+    cdf = hist.cumsum()
+    cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
+    cdf_normalized = cdf_normalized.astype(np.uint8)
+    equalized = cdf_normalized[gray_img.astype(np.uint8)]
+    return equalized
+
+def histogram_equalization_rgb_lab(img):
+
+    print("Выравнивание гистограммы RGB через LAB")
+    img_uint8 = np.clip(img, 0, 255).astype(np.uint8)
+    lab = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2LAB).astype(np.float32)
+    L = lab[:, :, 0]
+    hist, bins = np.histogram(L.flatten(), 256, [0, 255])
+    cdf = hist.cumsum()
+    cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
+    cdf_normalized = cdf_normalized.astype(np.uint8)
+    L_eq = cdf_normalized[L.astype(np.uint8)]
+    lab[:, :, 0] = L_eq
+    result = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return result
+
+def histogram_equalization_cv2(img):
+    print("выравнивание гистограммы (OpenCV)")
+    gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return cv2.equalizeHist(gray_img)
+
+def gamma_correction(img, gamma=1.0):
+    print(f"гамма-коррекция (gamma={gamma})")
+    img_normalized = img / 255.0
+    img_corrected = np.power(img_normalized, gamma)
+    return (img_corrected * 255).astype(np.uint8)
+
+def gamma_correction_rgb(img, gamma=1.0):
+    print(f"гамма-коррекция RGB (gamma={gamma})")
+    result = np.zeros_like(img, dtype=np.float32)
+    for c in range(3):
+        normalized = img[:, :, c] / 255.0
+        result[:, :, c] = np.power(normalized, gamma) * 255
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+def histogram_equalization_gray(img):
+    print("выравнивание гистограммы (серое)")
+    gray_img = gray(img) if img.ndim == 3 else img
+    hist, bins = np.histogram(gray_img.flatten(), 256, [0, 256])
+    
+    cdf = hist.cumsum()
+    cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
+    cdf_normalized = cdf_normalized.astype(np.uint8)
+    equalized = cdf_normalized[gray_img.astype(np.uint8)]
+    return equalized
+
+def histogram_equalization_rgb_lab(img):
+
+    print("выравнивание гистограммы RGB через LAB")
+    img_uint8 = np.clip(img, 0, 255).astype(np.uint8)
+    lab = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2LAB).astype(np.float32)
+    L = lab[:, :, 0]
+    hist, bins = np.histogram(L.flatten(), 256, [0, 255])
+    cdf = hist.cumsum()
+    cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
+    cdf_normalized = cdf_normalized.astype(np.uint8)
+    L_eq = cdf_normalized[L.astype(np.uint8)]
+    lab[:, :, 0] = L_eq
+    result = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return result
+
+def histogram_equalization_cv2(img):
+    print("выравнивание гистограммы (OpenCV)")
+    gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return cv2.equalizeHist(gray_img)
+
+
+if __name__ == "__main__":
+    files = [f for f in os.listdir("paintings") if f.endswith('.jpg') and 'gray'
+             not in f and 'cv' and 'blur' and 'gauss' and 'sobel' not in f]
+
+    if files:
+        img_path = os.path.join("paintings", files[0])
+        img = load_img(img_path)
+        print("ЧБ (ручная)")
+        run_task(img, gray, "gray_r.jpg")
+        run_task(img, gray_cv2, "gray_cv2.jpg")
+        print("размытие")
+        run_task(img, blur, "blur_r.jpg")
+        run_task(img, blur_cv2, "blur_cv2.jpg")
+        run_task(img, gauss, "gauss_r.jpg")
+        run_task(img, gauss_rgb, "gauss_rgb_r.jpg")
+        run_task(img, gauss_cv2, "gauss_cv2.jpg")
+        run_task(img, sobel, "sobel_r.jpg")
+        run_task(img, sobel_rgb, "sobel_rgb_r.jpg")
+        run_task(img, sobel_cv2, "sobel_cv2.jpg")
+        run_task(img, lambda x: gamma_correction(x, gamma=0.5), "gamma_05.jpg")
+        run_task(img, lambda x: gamma_correction(x, gamma=1.5), "gamma_15.jpg")
+        run_task(img, lambda x: gamma_correction_rgb(x, gamma=0.5), "gamma_rgb_05.jpg")
+        run_task(img, lambda x: gamma_correction_rgb(x, gamma=1.5), "gamma_rgb_15.jpg")
+        run_task(img, histogram_equalization_gray, "histeq_gray.jpg")
+        run_task(img, histogram_equalization_rgb_lab, "histeq_rgb_lab.jpg")
+        run_task(img, histogram_equalization_cv2, "histeq_cv2.jpg")
+
+    else:
+        print("картинки не найдены")

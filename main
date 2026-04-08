@@ -1,0 +1,50 @@
+import requests
+import json
+import os
+import random
+
+def search_paintings_via_api():
+    search_url = "https://collectionapi.metmuseum.org/public/collection/v1/search"
+    params = {
+        "q": "painting",
+        "hasImages": "true"
+    }
+    print("поиск картин")
+    response = requests.get(search_url, params=params)
+    data = response.json()
+
+    object_ids = data.get("objectIDs", [])
+    print(f"найдено картин с изображениями: {len(object_ids)}")
+
+    if object_ids:
+        random_id = random.choice(object_ids)
+        print(f"выбран случайный id: {random_id}")
+        return random_id
+    return None
+
+
+def download_painting(object_id):
+    url = f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{object_id}"
+    data = requests.get(url).json()
+    img_url = data.get("primaryImage")
+    if not img_url:
+        print("нет изображения")
+        return False
+    os.makedirs("paintings", exist_ok=True)
+    with open(f"paintings/{object_id}.json", "w") as f:
+        json.dump(data, f, indent=2)
+    img_data = requests.get(img_url).content
+    with open(f"paintings/{object_id}.jpg", "wb") as f:
+        f.write(img_data)
+    print(f"сохранено: paintings/{object_id}.jpg")
+    print(f"название: {data.get('title', 'Unknown')}")
+    return True
+
+
+if __name__ == "__main__":
+    painting_id = search_paintings_via_api()
+    if painting_id:
+        download_painting(painting_id)
+        print("\nзапустить img.py")
+    else:
+        print("не удалось найти картины")  
